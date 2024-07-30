@@ -1,5 +1,6 @@
+#![no_std]
+
 use anyhow::Result;
-use async_io::Async;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::peripheral;
 use esp_idf_svc::hal::prelude::Peripherals;
@@ -8,18 +9,15 @@ use esp_idf_svc::wifi::{
     AccessPointConfiguration, BlockingWifi, ClientConfiguration, Configuration, EspWifi,
 };
 use log::*;
-use std::net::{TcpStream, ToSocketAddrs};
-use std::os::fd::{AsRawFd, IntoRawFd};
-use std::{env, thread};
 
 use esp_idf_sys::{nvs_flash_init, ESP_OK};
 
 #[allow(dead_code)]
 #[cfg(not(feature = "qemu"))]
-const SSID: &str = env!("SSID");
+const SSID: &str = core::env!("SSID");
 #[allow(dead_code)]
 #[cfg(not(feature = "qemu"))]
-const PASS: &str = env!("PASS");
+const PASS: &str = core::env!("PASS");
 
 #[no_mangle]
 extern "C" fn rust_main() -> i32 {
@@ -65,12 +63,18 @@ fn wifi_and_https() -> Result<()> {
         })
     })?;
 
-    test_https_client()?;
+    // test_https_client()?;
 
     Ok(())
 }
 
+/*
 fn test_https_client() -> anyhow::Result<()> {
+    use async_io::Async;
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::os::fd::{AsRawFd, IntoRawFd};
+    use std::{thread};
+
     async fn test() -> anyhow::Result<()> {
         // Implement `esp_idf_svc::tls::PollableSocket` for async-io sockets
         ////////////////////////////////////////////////////////////////////
@@ -173,18 +177,19 @@ fn test_https_client() -> anyhow::Result<()> {
     }
 
     let th = thread::Builder::new()
-        .stack_size(20000)
+        .stack_size(40000)
         .spawn(move || async_io::block_on(test()))?;
 
     th.join().unwrap()
 }
+*/
 
 #[cfg(not(feature = "qemu"))]
 #[allow(dead_code)]
 fn wifi(
     modem: impl peripheral::Peripheral<P = esp_idf_svc::hal::modem::Modem> + 'static,
     sysloop: EspSystemEventLoop,
-) -> Result<Box<EspWifi<'static>>> {
+) -> Result<EspWifi<'static>> {
     let mut esp_wifi = EspWifi::new(modem, sysloop.clone(), None)?;
 
     let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sysloop)?;
@@ -241,7 +246,7 @@ fn wifi(
 
     info!("Wifi DHCP info: {:?}", ip_info);
 
-    Ok(Box::new(esp_wifi))
+    Ok(esp_wifi)
 }
 
 #[cfg(any(feature = "qemu", feature = "w5500", feature = "ip101"))]
