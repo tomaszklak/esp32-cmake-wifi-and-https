@@ -1,6 +1,6 @@
 #![no_std]
 
-use anyhow::Result;
+use core::ffi::CStr;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::peripheral;
 use esp_idf_svc::hal::prelude::Peripherals;
@@ -8,9 +8,8 @@ use esp_idf_svc::sys::EspError;
 use esp_idf_svc::wifi::{
     AccessPointConfiguration, BlockingWifi, ClientConfiguration, Configuration, EspWifi,
 };
+use esp_idf_sys::{nvs_flash_init, ESP_FAIL, ESP_OK};
 use log::*;
-
-use esp_idf_sys::{nvs_flash_init, ESP_OK};
 
 #[allow(dead_code)]
 #[cfg(not(feature = "qemu"))]
@@ -21,12 +20,11 @@ const PASS: &str = core::env!("PASS");
 
 #[no_mangle]
 extern "C" fn rust_main() -> i32 {
-    let res = wifi_and_https();
-    info!("wifi_and_https: {res:?}");
+    wifi_and_https();
     1337
 }
 
-fn wifi_and_https() -> Result<()> {
+fn wifi_and_https() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
     let flash_result = unsafe { nvs_flash_init() };
@@ -38,12 +36,12 @@ fn wifi_and_https() -> Result<()> {
     let peripherals = Peripherals::take().unwrap();
 
     #[allow(unused)]
-    let sysloop = EspSystemEventLoop::take()?;
+    let sysloop = EspSystemEventLoop::take().unwrap();
 
     #[allow(clippy::redundant_clone)]
     #[cfg(not(feature = "qemu"))]
     #[allow(unused_mut)]
-    let mut _wifi = wifi(peripherals.modem, sysloop.clone())?;
+    let mut _wifi = wifi(peripherals.modem, sysloop.clone()).unwrap();
 
     #[allow(clippy::redundant_clone)]
     #[cfg(feature = "qemu")]
@@ -61,148 +59,91 @@ fn wifi_and_https() -> Result<()> {
             max_fds: 5,
             ..Default::default()
         })
-    })?;
+    })
+    .unwrap();
 
-    // test_https_client()?;
-
-    Ok(())
+    test_https_client2();
 }
 
-/*
-fn test_https_client() -> anyhow::Result<()> {
-    use async_io::Async;
-    use std::net::{TcpStream, ToSocketAddrs};
-    use std::os::fd::{AsRawFd, IntoRawFd};
-    use std::{thread};
+fn test_https_client2() {
+    use esp_idf_sys::{
+        esp_crt_bundle_attach, esp_err_to_name, esp_http_client_cleanup, esp_http_client_config_t,
+        esp_http_client_event, esp_http_client_event_id_t_HTTP_EVENT_ON_DATA,
+        esp_http_client_get_content_length, esp_http_client_get_status_code, esp_http_client_init,
+        esp_http_client_is_chunked_response, esp_http_client_perform,
+    };
 
-    async fn test() -> anyhow::Result<()> {
-        // Implement `esp_idf_svc::tls::PollableSocket` for async-io sockets
-        ////////////////////////////////////////////////////////////////////
+    extern "C" fn http_event_handler(event: *mut esp_http_client_event) -> i32 {
+        assert!(!event.is_null());
+        let event = if event.is_null() {
+            return ESP_FAIL;
+        } else {
+            unsafe { &*event }
+        };
 
-        pub struct EspTlsSocket(Option<async_io::Async<TcpStream>>);
-
-        impl EspTlsSocket {
-            pub const fn new(socket: async_io::Async<TcpStream>) -> Self {
-                Self(Some(socket))
-            }
-
-            pub fn handle(&self) -> i32 {
-                self.0.as_ref().unwrap().as_raw_fd()
-            }
-
-            pub fn poll_readable(
-                &self,
-                ctx: &mut core::task::Context,
-            ) -> core::task::Poll<Result<(), esp_idf_svc::sys::EspError>> {
-                self.0
-                    .as_ref()
-                    .unwrap()
-                    .poll_readable(ctx)
-                    .map_err(|_| EspError::from_infallible::<{ esp_idf_svc::sys::ESP_FAIL }>())
-            }
-
-            pub fn poll_writeable(
-                &self,
-                ctx: &mut core::task::Context,
-            ) -> core::task::Poll<Result<(), esp_idf_svc::sys::EspError>> {
-                self.0
-                    .as_ref()
-                    .unwrap()
-                    .poll_writable(ctx)
-                    .map_err(|_| EspError::from_infallible::<{ esp_idf_svc::sys::ESP_FAIL }>())
-            }
-
-            fn release(&mut self) -> Result<(), esp_idf_svc::sys::EspError> {
-                let socket = self.0.take().unwrap();
-                socket.into_inner().unwrap().into_raw_fd();
-
-                Ok(())
+        if event.event_id == esp_http_client_event_id_t_HTTP_EVENT_ON_DATA {
+            if !unsafe { esp_http_client_is_chunked_response(event.client) } {
+                let data = unsafe {
+                    core::slice::from_raw_parts(
+                        event.data as *const u8,
+                        event.data_len.try_into().unwrap(),
+                    )
+                };
+                match core::str::from_utf8(&data[..]) {
+                    Ok(body) => info!("{body}"),
+                    Err(e) => error!("error reading body: {e:?}"),
+                }
             }
         }
-
-        impl esp_idf_svc::tls::Socket for EspTlsSocket {
-            fn handle(&self) -> i32 {
-                EspTlsSocket::handle(self)
-            }
-
-            fn release(&mut self) -> Result<(), esp_idf_svc::sys::EspError> {
-                EspTlsSocket::release(self)
-            }
-        }
-
-        impl esp_idf_svc::tls::PollableSocket for EspTlsSocket {
-            fn poll_readable(
-                &self,
-                ctx: &mut core::task::Context,
-            ) -> core::task::Poll<Result<(), esp_idf_svc::sys::EspError>> {
-                EspTlsSocket::poll_readable(self, ctx)
-            }
-
-            fn poll_writable(
-                &self,
-                ctx: &mut core::task::Context,
-            ) -> core::task::Poll<Result<(), esp_idf_svc::sys::EspError>> {
-                EspTlsSocket::poll_writeable(self, ctx)
-            }
-        }
-
-        ////////////////////////////////////////////////////////////////////
-
-        let addr = "tilde.cat:443".to_socket_addrs()?.next().unwrap();
-        info!("Addr: {addr:?}");
-        let socket = Async::<TcpStream>::connect(addr).await?;
-
-        let mut tls = esp_idf_svc::tls::EspAsyncTls::adopt(EspTlsSocket::new(socket))?;
-        info!("tls");
-
-        tls.negotiate("tilde.cat", &esp_idf_svc::tls::Config::new())
-            .await?;
-        info!("negotiate");
-
-        tls.write_all(b"GET / HTTP/1.0\r\n\r\n").await?;
-        info!("GET");
-
-        let mut body = [0_u8; 2048];
-
-        let read = esp_idf_svc::io::utils::asynch::try_read_full(&mut tls, &mut body)
-            .await
-            .map_err(|(e, _)| e)?;
-
-        info!(
-            "Body (truncated to 2K):\n{:?}",
-            String::from_utf8_lossy(&body[..read]).into_owned()
-        );
-
-        Ok(())
+        ESP_OK
     }
 
-    let th = thread::Builder::new()
-        .stack_size(40000)
-        .spawn(move || async_io::block_on(test()))?;
+    // let url = CStr::from_bytes_with_nul(b"https://tilde.cat\0").unwrap();
+    let url = CStr::from_bytes_with_nul(b"https://www.howsmyssl.com\0").unwrap();
+    let config = esp_http_client_config_t {
+        url: url.as_ptr() as *const i8,
+        event_handler: Some(http_event_handler),
+        crt_bundle_attach: Some(esp_crt_bundle_attach),
+        ..Default::default()
+    };
 
-    th.join().unwrap()
+    let client = unsafe { esp_http_client_init(&config) };
+    let err = unsafe { esp_http_client_perform(client) };
+    if err == ESP_OK {
+        info!(
+            "HTTPS Status = {}, content_length = {}",
+            unsafe { esp_http_client_get_status_code(client) },
+            unsafe { esp_http_client_get_content_length(client) },
+        );
+    } else {
+        let name = unsafe { esp_err_to_name(err) };
+        let name = unsafe { CStr::from_ptr(name) };
+        let name = name.to_str();
+        error!("Error perform http request {name:?}");
+    }
+    unsafe { esp_http_client_cleanup(client) };
 }
-*/
 
 #[cfg(not(feature = "qemu"))]
 #[allow(dead_code)]
 fn wifi(
     modem: impl peripheral::Peripheral<P = esp_idf_svc::hal::modem::Modem> + 'static,
     sysloop: EspSystemEventLoop,
-) -> Result<EspWifi<'static>> {
-    let mut esp_wifi = EspWifi::new(modem, sysloop.clone(), None)?;
+) -> Result<EspWifi<'static>, EspError> {
+    let mut esp_wifi = EspWifi::new(modem, sysloop.clone(), None).unwrap();
 
-    let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sysloop)?;
+    let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sysloop).unwrap();
 
-    wifi.set_configuration(&Configuration::Client(ClientConfiguration::default()))?;
+    wifi.set_configuration(&Configuration::Client(ClientConfiguration::default()))
+        .unwrap();
 
     info!("Starting wifi...");
 
-    wifi.start()?;
+    wifi.start().unwrap();
 
     info!("Scanning...");
 
-    let ap_infos = wifi.scan()?;
+    let ap_infos = wifi.scan().unwrap();
 
     let ours = ap_infos.into_iter().find(|a| a.ssid == SSID);
 
@@ -232,17 +173,18 @@ fn wifi(
             channel: channel.unwrap_or(1),
             ..Default::default()
         },
-    ))?;
+    ))
+    .unwrap();
 
     info!("Connecting wifi...");
 
-    wifi.connect()?;
+    wifi.connect().unwrap();
 
     info!("Waiting for DHCP lease...");
 
-    wifi.wait_netif_up()?;
+    wifi.wait_netif_up().unwrap();
 
-    let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
+    let ip_info = wifi.wifi().sta_netif().get_ip_info().unwrap();
 
     info!("Wifi DHCP info: {:?}", ip_info);
 
