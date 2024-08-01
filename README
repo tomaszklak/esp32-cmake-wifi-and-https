@@ -1,5 +1,1 @@
-cmake based esp32 rust project that connects to wifi and performs https request.
-
-Run using this command:
-
-$ SSID=YOUR_WIFI_NAME PASS=YOUR_WIFI_PASSWORD idf.py build flash monitor
+cmake based esp32 rust project that performs https request.
