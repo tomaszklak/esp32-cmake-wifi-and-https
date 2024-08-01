@@ -1,8 +1,8 @@
 #![no_std]
 
 use core::ffi::CStr;
-use esp_idf_sys::{ESP_FAIL, ESP_OK};
-use esp_println::println;
+use esp_idf_sys::{nvs_flash_init, ESP_FAIL, ESP_OK};
+use esp_println::{dbg, println};
 
 #[no_mangle]
 extern "C" fn rust_main() -> i32 {
@@ -12,7 +12,39 @@ extern "C" fn rust_main() -> i32 {
 
 fn https() {
     esp_idf_sys::link_patches();
+
+    println!(
+        "[AFTER START] free heap size: {}, minimum free heap size: {}",
+        unsafe { esp_get_free_heap_size() },
+        unsafe { esp_get_minimum_free_heap_size() }
+    );
+
+    let flash_result = unsafe { nvs_flash_init() };
+    if flash_result != ESP_OK {
+        println!("Failed to initialize NVS flash");
+    }
+
+    println!(
+        "[AFTER FLASH] free heap size: {}, minimum free heap size: {}",
+        unsafe { esp_get_free_heap_size() },
+        unsafe { esp_get_minimum_free_heap_size() }
+    );
+
+    wifi_init();
+
+    println!(
+        "[AFTER  WIFI] free heap size: {}, minimum free heap size: {}",
+        unsafe { esp_get_free_heap_size() },
+        unsafe { esp_get_minimum_free_heap_size() }
+    );
+
     test_https_client();
+
+    println!(
+        "[AFTER HTTPS] free heap size: {}, minimum free heap size: {}",
+        unsafe { esp_get_free_heap_size() },
+        unsafe { esp_get_minimum_free_heap_size() }
+    );
 }
 
 fn test_https_client() {
@@ -72,4 +104,170 @@ fn test_https_client() {
         println!("Error perform http request {name:?}");
     }
     unsafe { esp_http_client_cleanup(client) };
+}
+
+use core::mem::MaybeUninit;
+use esp_idf_sys::ip_event_t_IP_EVENT_STA_GOT_IP as IP_EVENT_STA_GOT_IP;
+use esp_idf_sys::wifi_event_t_WIFI_EVENT_STA_DISCONNECTED as WIFI_EVENT_STA_DISCONNECTED;
+use esp_idf_sys::wifi_event_t_WIFI_EVENT_STA_START as WIFI_EVENT_STA_START;
+use esp_idf_sys::wifi_sae_pwe_method_t_WPA3_SAE_PWE_BOTH;
+use esp_idf_sys::*;
+const WIFI_CONNECTED_BIT: u32 = esp_idf_sys::BIT0;
+const WIFI_FAIL_BIT: u32 = esp_idf_sys::BIT1;
+static mut WIFI_EVENT_GROUP: MaybeUninit<*mut EventGroupDef_t> = MaybeUninit::uninit();
+static mut RETRY_NUM: i32 = 0;
+const MAXIMUM_RETRY: i32 = 5;
+extern "C" fn event_handler(
+    _arg: *mut core::ffi::c_void,
+    event_base: esp_event_base_t,
+    event_id: i32,
+    event_data: *mut core::ffi::c_void,
+) {
+    unsafe {
+        if event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START as i32 {
+            esp_wifi_connect();
+        } else if event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED as i32 {
+            if RETRY_NUM < MAXIMUM_RETRY {
+                esp_wifi_connect();
+                RETRY_NUM += 1;
+                println!("Retry to connect to the AP");
+            } else {
+                xEventGroupSetBits(WIFI_EVENT_GROUP.assume_init(), WIFI_FAIL_BIT);
+            }
+            println!("Failed to connect to the AP");
+        } else if event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP as i32 {
+            let event = &*(event_data as *const ip_event_got_ip_t);
+            let ip = ip4_addr_t {
+                addr: event.ip_info.ip.addr,
+            };
+            let addr = CStr::from_ptr(ip4addr_ntoa(&ip));
+            println!("Got IP: {}", addr.to_str().unwrap());
+            RETRY_NUM = 0;
+            xEventGroupSetBits(WIFI_EVENT_GROUP.assume_init(), WIFI_CONNECTED_BIT);
+        }
+    }
+}
+fn wifi_init() {
+    unsafe { WIFI_EVENT_GROUP.write(xEventGroupCreate()) };
+    esp!(unsafe { esp_netif_init() }).expect("Failed to initialize network interface");
+    esp!(unsafe { esp_event_loop_create_default() }).expect("Failed to create event loop");
+    unsafe { esp_netif_create_default_wifi_sta() };
+    let nvs_enabled = true;
+    let wifi_init_config = wifi_init_config_t {
+        #[cfg(esp_idf_version_major = "4")]
+        event_handler: Some(esp_event_send_internal),
+        osi_funcs: unsafe { core::ptr::addr_of_mut!(g_wifi_osi_funcs) },
+        wpa_crypto_funcs: unsafe { g_wifi_default_wpa_crypto_funcs },
+        static_rx_buf_num: CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM as _,
+        dynamic_rx_buf_num: CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM as _,
+        tx_buf_type: CONFIG_ESP32_WIFI_TX_BUFFER_TYPE as _,
+        static_tx_buf_num: WIFI_STATIC_TX_BUFFER_NUM as _,
+        dynamic_tx_buf_num: WIFI_DYNAMIC_TX_BUFFER_NUM as _,
+        cache_tx_buf_num: WIFI_CACHE_TX_BUFFER_NUM as _,
+        csi_enable: WIFI_CSI_ENABLED as _,
+        ampdu_rx_enable: WIFI_AMPDU_RX_ENABLED as _,
+        ampdu_tx_enable: WIFI_AMPDU_TX_ENABLED as _,
+        amsdu_tx_enable: WIFI_AMSDU_TX_ENABLED as _,
+        nvs_enable: i32::from(nvs_enabled),
+        nano_enable: WIFI_NANO_FORMAT_ENABLED as _,
+        //tx_ba_win: WIFI_DEFAULT_TX_BA_WIN as _,
+        rx_ba_win: WIFI_DEFAULT_RX_BA_WIN as _,
+        wifi_task_core_id: WIFI_TASK_CORE_ID as _,
+        beacon_max_len: WIFI_SOFTAP_BEACON_MAX_LEN as _,
+        mgmt_sbuf_num: WIFI_MGMT_SBUF_NUM as _,
+        #[cfg(any(
+            esp_idf_version_major = "4",
+            all(esp_idf_version_major = "5", esp_idf_version_minor = "0"),
+            esp_idf_version_full = "5.1.0",
+            esp_idf_version_full = "5.1.1",
+            esp_idf_version_full = "5.1.2"
+        ))]
+        feature_caps: unsafe { g_wifi_feature_caps },
+        #[cfg(not(any(
+            esp_idf_version_major = "4",
+            all(esp_idf_version_major = "5", esp_idf_version_minor = "0"),
+            esp_idf_version_full = "5.1.0",
+            esp_idf_version_full = "5.1.1",
+            esp_idf_version_full = "5.1.2"
+        )))]
+        feature_caps: WIFI_FEATURE_CAPS as _,
+        sta_disconnected_pm: WIFI_STA_DISCONNECTED_PM_ENABLED != 0,
+        // Available since ESP IDF V4.4.4+
+        #[cfg(any(
+            not(esp_idf_version_major = "4"),
+            all(
+                esp_idf_version_major = "4",
+                any(
+                    not(esp_idf_version_minor = "4"),
+                    all(
+                        not(esp_idf_version_patch = "0"),
+                        not(esp_idf_version_patch = "1"),
+                        not(esp_idf_version_patch = "2"),
+                        not(esp_idf_version_patch = "3")
+                    )
+                )
+            )
+        ))]
+        espnow_max_encrypt_num: CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM as i32,
+        magic: WIFI_INIT_CONFIG_MAGIC as _,
+        ..Default::default()
+    };
+    esp!(unsafe { esp_wifi_init(&wifi_init_config) }).expect("Failed to initialize Wi-Fi");
+    esp!(unsafe {
+        esp_event_handler_instance_register(
+            WIFI_EVENT,
+            ESP_EVENT_ANY_ID,
+            Some(event_handler),
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+    })
+    .expect("Failed to register Wi-Fi event handler");
+    esp!(unsafe {
+        esp_event_handler_instance_register(
+            IP_EVENT,
+            IP_EVENT_STA_GOT_IP as i32,
+            Some(event_handler),
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+    })
+    .expect("Failed to register IP event handler");
+    // Set Wi-Fi configuration
+    let mut wifi_config = wifi_config_t {
+        sta: wifi_sta_config_t {
+            ssid: *b"PLAY_Swiatlowodowy_C0E1\0\0\0\0\0\0\0\0\0",
+            password: *b"MgMcCqHjyk\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+            threshold: wifi_scan_threshold_t {
+                authmode: wifi_auth_mode_t_WIFI_AUTH_WPA2_PSK,
+                rssi:  -127,
+            },
+            sae_pwe_h2e: wifi_sae_pwe_method_t_WPA3_SAE_PWE_BOTH,
+            sae_h2e_identifier: *b"your_identifier12345678901234567",
+            ..Default::default()
+        },
+    };
+    esp!(unsafe { esp_wifi_set_mode(esp_idf_sys::wifi_mode_t_WIFI_MODE_STA) })
+        .expect("Failed to set Wi-Fi mode");
+    esp!(unsafe {
+        esp_wifi_set_config(esp_idf_sys::wifi_interface_t_WIFI_IF_STA, &mut wifi_config)
+    })
+    .expect("Failed to set Wi-Fi configuration");
+    esp!(unsafe { esp_wifi_start() }).expect("Failed to start Wi-Fi");
+    let bits = unsafe {
+        xEventGroupWaitBits(
+            WIFI_EVENT_GROUP.assume_init(),
+            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+            0,
+            0,
+            u32::MAX,
+        )
+    };
+    if bits & WIFI_CONNECTED_BIT != 0 {
+        println!("Connected to WIFI");
+    } else if bits & WIFI_FAIL_BIT != 0 {
+        println!("Failed to connect to WIFI");
+    } else {
+        println!("Unexpected event");
+    }
 }
