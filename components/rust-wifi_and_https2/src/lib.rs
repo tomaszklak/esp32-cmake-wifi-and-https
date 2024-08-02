@@ -2,7 +2,7 @@
 
 use core::ffi::CStr;
 use esp_idf_sys::{nvs_flash_init, ESP_FAIL, ESP_OK};
-use esp_println::{dbg, println};
+use esp_println::println;
 
 #[no_mangle]
 extern "C" fn rust_main() -> i32 {
