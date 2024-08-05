@@ -25,4 +25,5 @@ esp-idf-sys = { version = "0.34", default-features = false, features = ["panic_h
 esp-println = { version = "0.10", default-features = false, features = ["esp32", "auto"] }
 
 [build-dependencies]
+bindgen = "0.69.4"
 embuild = "0.31"

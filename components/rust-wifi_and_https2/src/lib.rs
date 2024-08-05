@@ -1,12 +1,27 @@
 #![no_std]
 
+#[allow(warnings)]
+mod esp_wireguard_sys;
+
+use crate::esp_wireguard_sys::{
+    esp_wireguard_connect, esp_wireguard_init, wireguard_config_t, wireguard_ctx_t,
+};
 use core::ffi::CStr;
+use core::mem::MaybeUninit;
+use core::ptr::{null, null_mut};
+use esp_idf_sys::{
+    ip_event_t_IP_EVENT_STA_GOT_IP as IP_EVENT_STA_GOT_IP,
+    wifi_event_t_WIFI_EVENT_STA_DISCONNECTED as WIFI_EVENT_STA_DISCONNECTED,
+    wifi_event_t_WIFI_EVENT_STA_START as WIFI_EVENT_STA_START,
+    wifi_sae_pwe_method_t_WPA3_SAE_PWE_BOTH, *,
+};
 use esp_idf_sys::{nvs_flash_init, ESP_FAIL, ESP_OK};
 use esp_println::println;
 
 #[no_mangle]
 extern "C" fn rust_main() -> i32 {
     https();
+    wireguard();
     1337
 }
 
@@ -80,8 +95,8 @@ fn test_https_client() {
         ESP_OK
     }
 
-    // let url = CStr::from_bytes_with_nul(b"https://tilde.cat\0").unwrap();
-    let url = CStr::from_bytes_with_nul(b"https://www.howsmyssl.com\0").unwrap();
+    // let url = c"https://tilde.cat";
+    let url = c"https://www.howsmyssl.com";
     let config = esp_http_client_config_t {
         url: url.as_ptr() as *const i8,
         event_handler: Some(http_event_handler),
@@ -106,12 +121,6 @@ fn test_https_client() {
     unsafe { esp_http_client_cleanup(client) };
 }
 
-use core::mem::MaybeUninit;
-use esp_idf_sys::ip_event_t_IP_EVENT_STA_GOT_IP as IP_EVENT_STA_GOT_IP;
-use esp_idf_sys::wifi_event_t_WIFI_EVENT_STA_DISCONNECTED as WIFI_EVENT_STA_DISCONNECTED;
-use esp_idf_sys::wifi_event_t_WIFI_EVENT_STA_START as WIFI_EVENT_STA_START;
-use esp_idf_sys::wifi_sae_pwe_method_t_WPA3_SAE_PWE_BOTH;
-use esp_idf_sys::*;
 const WIFI_CONNECTED_BIT: u32 = esp_idf_sys::BIT0;
 const WIFI_FAIL_BIT: u32 = esp_idf_sys::BIT1;
 static mut WIFI_EVENT_GROUP: MaybeUninit<*mut EventGroupDef_t> = MaybeUninit::uninit();
@@ -269,5 +278,51 @@ fn wifi_init() {
         println!("Failed to connect to WIFI");
     } else {
         println!("Unexpected event");
+    }
+}
+
+fn wireguard() {
+    // what about ESP_WIREGUARD_CONFIG_DEFAULT?
+    let mut config = wireguard_config_t {
+        private_key: c"+PdHsud8Uan6oRHV2YdZ/BTySw4DvTw/tquHBcoVP0k=".as_ptr() as *mut i8,
+        listen_port: 51820,
+        fw_mark: 31337,
+        public_key: c"7NwWkV5y7o4e5fEomztOhisTZrKP1UBIczP6ZYg3hy4=".as_ptr() as *mut i8,
+        preshared_key: null_mut(),
+        allowed_ip: c"10.8.0.2".as_ptr() as *mut i8,
+        allowed_ip_mask: c"255.255.255.255".as_ptr() as *mut i8,
+        endpoint: c"70.34.255.171".as_ptr() as *mut i8,
+        port: 51820,
+        persistent_keepalive: 0,
+    };
+    let mut ctx = wireguard_ctx_t {
+        config: null_mut(),
+        netif: null_mut(),
+        netif_default: null_mut(),
+    };
+    match unsafe { esp_wireguard_init(&mut config, &mut ctx) } {
+        ESP_OK => {
+            println!("esp_wireguard_init OK");
+        }
+        err => {
+            let name = unsafe { esp_err_to_name(err) };
+            let name = unsafe { CStr::from_ptr(name) };
+            let name = name.to_str();
+            println!("esp_wireguard_init: {name:?}");
+            return;
+        }
+    }
+
+    match unsafe { esp_wireguard_connect(&mut ctx) } {
+        ESP_OK => {
+            println!("esp_wireguard_connect OK");
+        }
+        err => {
+            let name = unsafe { esp_err_to_name(err) };
+            let name = unsafe { CStr::from_ptr(name) };
+            let name = name.to_str();
+            println!("esp_wireguard_connect: {name:?}");
+            return;
+        }
     }
 }
