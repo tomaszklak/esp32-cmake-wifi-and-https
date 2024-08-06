@@ -8,7 +8,7 @@ use crate::esp_wireguard_sys::{
 };
 use core::ffi::CStr;
 use core::mem::MaybeUninit;
-use core::ptr::{null, null_mut};
+use core::ptr::null_mut;
 use esp_idf_sys::{
     ip_event_t_IP_EVENT_STA_GOT_IP as IP_EVENT_STA_GOT_IP,
     wifi_event_t_WIFI_EVENT_STA_DISCONNECTED as WIFI_EVENT_STA_DISCONNECTED,
@@ -19,7 +19,7 @@ use esp_idf_sys::{nvs_flash_init, ESP_FAIL, ESP_OK};
 use esp_println::println;
 
 #[no_mangle]
-extern "C" fn rust_main() -> i32 {
+extern "C" fn run_wifi_https_and_wireguard() -> i32 {
     https();
     wireguard();
     1337

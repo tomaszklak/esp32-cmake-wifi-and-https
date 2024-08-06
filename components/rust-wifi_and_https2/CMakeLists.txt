@@ -6,7 +6,7 @@ set(RUST_DEPS "driver" "esp_event" "esp_wifi" "wpa_supplicant" "nvs_flash" "esp_
 
 idf_component_register(
     SRCS "placeholder.c"
-    INCLUDE_DIRS ""
+    INCLUDE_DIRS "include"
     PRIV_REQUIRES "${RUST_DEPS}"
 )
 

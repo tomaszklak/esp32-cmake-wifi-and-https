@@ -7,13 +7,12 @@
    CONDITIONS OF ANY KIND, either express or implied.
 */
 #include <stdio.h>
-
-extern int rust_main(void);
+#include <esp_idf_sys_wifi_and_https.h>
 
 void app_main(void) {
     printf("Hello world from C!\n");
 
-    int result = rust_main();
+    int result = run_wifi_https_and_wireguard();
 
     printf("Rust returned code: %d\n", result);
 }
