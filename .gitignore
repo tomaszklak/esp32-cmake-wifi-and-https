@@ -1,5 +1,5 @@
 /.vscode
 /.embuild
+/.cache
 build/
-components/*/target/
-Cargo.lock
+target

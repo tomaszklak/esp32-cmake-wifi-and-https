@@ -3,10 +3,6 @@ dependencies:
   ## Required IDF version
   idf:
     version: ">=4.1.0"
-  esp_wireguard:
-    # path: esp_wireguard
-    git: ssh://git@github.com/tomaszklak/esp_wireguard.git
-    version: "0bd67babed04c2522229fe701fbf1a5cdf83a00e"
   # # Put list of dependencies here
   # # For components maintained by Espressif:
   # component: "~1.0.0"
